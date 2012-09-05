@@ -1,0 +1,196 @@
+%!PS
+
+%===================================================
+% PS-HTTPD V1.6
+% Copyright 2000-2010 Anders Karlsson, pugo@pugo.org
+% License: GNU General Public License
+%===================================================
+
+% This dictionary maps between extensions and mime-types
+% Observe that "html" isn't part of this dict, that's because
+% it's default in print_header.
+
+/extensiondict 29 dict def
+extensiondict begin
+    /jpg  (Content-type: image/jpeg\n) def
+    /jpeg (Content-type: image/jpeg\n) def
+    /gif  (Content-type: image/gif\n) def
+    /png  (Content-type: image/png\n) def
+    /tif  (Content-type: image/tiff\n) def
+    /tiff (Content-type: image/tiff\n) def
+    /txt  (Content-type: text/plain\n) def
+    /css  (Content-type: text/css\n) def
+    /ps   (Content-type: application/postscript\n) def
+    /pdf  (Content-type: application/pdf\n) def
+    /eps  (Content-type: application/postscript\n) def
+    /tar  (Content-type: application/x-tar\n) def
+    /gz   (Content-type: application/x-tar\n) def
+    /tgz  (Content-type: application/x-tar\n) def
+    /rpm  (Content-type: application/x-rpm\n) def
+    /zip  (Content-type: application/zip\n) def
+    /mp3  (Content-type: audio/mpeg\n) def
+    /mp2  (Content-type: audio/mpeg\n) def
+    /mid  (Content-type: audio/midi\n) def
+    /midi (Content-type: audio/midi\n) def
+    /wav  (Content-type: audio/x-wav\n) def
+    /au   (Content-type: audio/basic\n) def
+    /ram  (Content-type: audio/x-pn-realaudio\n) def
+    /ra   (Content-type: audio/x-realaudio\n) def
+    /mpg  (Content-type: video/mpeg\n) def
+    /mpeg (Content-type: video/mpeg\n) def
+    /qt   (Content-type: video/quicktime\n) def
+    /mov  (Content-type: video/quicktime\n) def
+    /avi  (Content-type: video/x-msvideo\n) def
+end
+
+
+% Concatenate two strings
+/concatstr     %  string string - string
+{
+    exch dup length 2 index length add string
+    dup dup 4 2 roll copy length 4 -1 roll putinterval
+} bind def
+
+
+% read file /infile and send it to %stdout 
+/get_file
+{
+    { % loop
+        infile inbuff readstring
+        { stdout exch writestring }
+        { stdout exch writestring infile closefile exit } ifelse
+    } bind loop
+    flush
+} bind def
+
+
+% Return extension of file on stack
+/get_extension   % (filepath.ext) -- (bool) (ext)
+{
+    dup
+    { % loop
+        (.) search
+        { pop pop }
+        { exit } ifelse
+    } loop
+    exch 1 index ne
+} bind def
+
+
+% Print a HTTP-header
+/print_header   % (filename) (size) --
+{
+    stdout persistent {(HTTP/1.1 200 OK\n)} {(HTTP/1.0 200 OK\n)} ifelse writestring
+    stdout (MIME-Version: 1.0\n) writestring
+    stdout (Server: PS-HTTPD/1.6\n) writestring
+    stdout (Content-Length: ) writestring
+    stdout exch 16 string cvs writestring
+    stdout (\n) writestring
+
+    get_extension
+    {
+        % If the extension exists in dictionary, then use it,
+        % otherwise hope that text/html is good enough.
+        dup extensiondict exch known
+        { extensiondict exch get stdout exch writestring }
+        { pop stdout (Content-type: text/html\n) writestring } ifelse
+    }
+    { % Couldn't get extension, guess it's text/html
+        pop stdout (Content-type: text/plain\n) writestring
+    } ifelse
+
+    stdout (\n) writestring flush
+} bind def
+
+
+% read command from stdin and define it to /command
+/command_read
+{
+    /stdin (%stdin) (r) file def
+    4096 string
+    {
+        % read lines until empty line
+        stdin 1024 string readline pop
+        dup () eq { pop exit  } { concatstr } ifelse
+    } loop
+
+    /command exch def
+} bind def
+
+
+% See if command wants persistent connection
+/command_check_persistence
+{
+    % Check if we should do HTTP 1.1 persistent connections
+    command (HTTP/1.1) search
+    {
+        pop pop pop
+        command (Connection: close) search     % Check for Connection: close
+        { pop pop pop  /persistent false def }
+        { pop          /persistent true def  } ifelse
+    }
+    { pop /persistent false def } ifelse
+} bind def
+
+
+% Parse the HTTP-command read from user
+/command_respond
+{
+    command token
+    {
+        (GET) eq
+        {
+            ( ) search
+            {
+                exch pop exch pop
+                root exch concatstr            % build path
+                /filename exch def             % define filename and clean stack
+
+                filename filename length 1 sub 1 getinterval (/) eq
+                { filename (index.html) concatstr
+                    /filename exch def } if      % add index.html
+
+                filename (..) search           % Check if user tries to use ".."
+                { stdout err_400 quit } if pop
+
+                /infile filename (r) file def    % open file
+                filename infile bytesavailable print_header
+                get_file
+            } if
+        } if
+    } if
+} bind def
+
+
+% Error messages
+/err_400 (400 Bad Request.\n\n) def
+/err_404 (404 Page not found.\n\n) def
+
+
+% Redefine handleerror in errordict to quit on all errors.
+% Otherwise it will be possible to telnet and get a postscript-prompt
+errordict begin
+/handleerror { stdout err_400 writestring quit } bind def 
+end
+
+% Root-path (root of WWW-pages)
+/root (/home/pugo/projekt/pshttpd/www) def
+
+% Buffer used to read data from file. Around 2048 bytes should be good.
+/inbuff 2048 string def
+
+% Init environment
+/stdout (%stdout) (w) file def
+/command () def
+
+
+% Read a command from the server and parse result. Loop until persistent close.
+{
+    command_read
+    command_check_persistence
+    command_respond
+
+    persistent not { exit } if % exit if not persistent, otherwise loop again
+} loop
+
+quit
